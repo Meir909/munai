@@ -5,8 +5,9 @@
   "outputDirectory": "munai-digital-oilfield-ops-main/dist",
   "functions": {
     "api/index.py": {
-      "runtime": "python3.12",
-      "maxDuration": 30
+      "runtime": "@vercel/python@4.5.0",
+      "maxDuration": 30,
+      "includeFiles": "api/**"
     }
   },
   "routes": [
