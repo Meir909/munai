@@ -1,15 +1,20 @@
 {
   "version": 2,
-  "framework": null,
-  "buildCommand": "cd munai-digital-oilfield-ops-main && npm install && npm run build:spa",
-  "outputDirectory": "munai-digital-oilfield-ops-main/dist",
-  "installCommand": "pip install -r api/requirements.txt --break-system-packages",
-  "functions": {
-    "api/index.py": {
-      "runtime": "@vercel/python@4.5.0",
-      "maxDuration": 30
+  "builds": [
+    {
+      "src": "api/index.py",
+      "use": "@vercel/python",
+      "config": { "maxDuration": 30 }
+    },
+    {
+      "src": "munai-digital-oilfield-ops-main/package.json",
+      "use": "@vercel/static-build",
+      "config": {
+        "distDir": "dist",
+        "buildCommand": "npm install && npm run build:spa"
+      }
     }
-  },
+  ],
   "routes": [
     {
       "src": "/api/(.*)",
@@ -17,21 +22,20 @@
     },
     {
       "src": "/assets/(.*)",
-      "dest": "/assets/$1"
+      "dest": "/munai-digital-oilfield-ops-main/dist/assets/$1"
     },
     {
       "handle": "filesystem"
     },
     {
       "src": "/(.*)",
-      "dest": "/index.html"
+      "dest": "/munai-digital-oilfield-ops-main/dist/index.html"
     }
   ],
   "env": {
     "DATABASE_URL": "sqlite:////tmp/munai.db",
     "SECRET_KEY": "munai-production-secret-key-2026-change-me",
     "ALGORITHM": "HS256",
-    "ACCESS_TOKEN_EXPIRE_MINUTES": "10080",
-    "VITE_API_URL": "/api"
+    "ACCESS_TOKEN_EXPIRE_MINUTES": "10080"
   }
 }
