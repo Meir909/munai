@@ -3,7 +3,7 @@
   "framework": null,
   "buildCommand": "cd munai-digital-oilfield-ops-main && npm install && npm run build:spa",
   "outputDirectory": "munai-digital-oilfield-ops-main/dist",
-  "installCommand": "pip install -r api/requirements.txt",
+  "installCommand": "pip install -r api/requirements.txt --break-system-packages",
   "functions": {
     "api/index.py": {
       "runtime": "@vercel/python@4.5.0",
