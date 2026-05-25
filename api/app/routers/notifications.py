@@ -1,50 +1,38 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlite3 import Connection
 from app.database import get_db
-from app import models, schemas
+from app import schemas
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/notifications", tags=["notifications"])
 
 
-@router.get("", response_model=list[schemas.NotificationOut])
-def list_notifications(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    notifs = (
-        db.query(models.Notification)
-        .filter(models.Notification.user_id == current_user.id)
-        .order_by(models.Notification.created_at.desc())
-        .all()
+def _row_to_out(row) -> schemas.NotificationOut:
+    return schemas.NotificationOut(
+        id=row["id"], icon=row["icon"] or "info",
+        title=row["title"], body=row["body"] or "",
+        tone=row["tone"] or "info", unread=bool(row["unread"]),
+        created_at=row["created_at"]
     )
-    return [schemas.NotificationOut.model_validate(n) for n in notifs]
+
+
+@router.get("", response_model=list[schemas.NotificationOut])
+def list_notifications(db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    rows = db.execute(
+        "SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC", (current_user.id,)
+    ).fetchall()
+    return [_row_to_out(r) for r in rows]
 
 
 @router.post("/{notif_id}/read")
-def mark_read(
-    notif_id: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    n = db.query(models.Notification).filter(
-        models.Notification.id == notif_id,
-        models.Notification.user_id == current_user.id,
-    ).first()
-    if n:
-        n.unread = False
-        db.commit()
+def mark_read(notif_id: str, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    db.execute(
+        "UPDATE notifications SET unread=0 WHERE id=? AND user_id=?", (notif_id, current_user.id)
+    )
     return {"ok": True}
 
 
 @router.post("/read-all")
-def mark_all_read(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    db.query(models.Notification).filter(
-        models.Notification.user_id == current_user.id,
-        models.Notification.unread == True,
-    ).update({"unread": False})
-    db.commit()
+def mark_all_read(db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    db.execute("UPDATE notifications SET unread=0 WHERE user_id=?", (current_user.id,))
     return {"ok": True}

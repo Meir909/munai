@@ -1,18 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlite3 import Connection
 from app.database import get_db
-from app import models, schemas
+from app import schemas
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/audit", tags=["audit"])
 
 
 @router.get("", response_model=list[schemas.AuditLogOut])
-def list_audit(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def list_audit(db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role not in ("manager", "director", "admin"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
-    logs = db.query(models.AuditLog).order_by(models.AuditLog.created_at.desc()).limit(100).all()
-    return [schemas.AuditLogOut.model_validate(l) for l in logs]
+    rows = db.execute("SELECT * FROM audit_logs ORDER BY created_at DESC LIMIT 100").fetchall()
+    return [schemas.AuditLogOut(id=r["id"], who=r["who"], action=r["action"], target=r["target"], created_at=r["created_at"]) for r in rows]

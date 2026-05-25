@@ -1,88 +1,69 @@
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.orm import Session
+from sqlite3 import Connection
 from app.database import get_db
-from app import models, schemas
+from app import schemas
 from app.auth import get_current_user, hash_password
-from app.models import AuditLog
 
 router = APIRouter(prefix="/users", tags=["users"])
 
 
+def _row_to_user(row) -> schemas.UserOut:
+    return schemas.UserOut(
+        id=row["id"], name=row["name"], email=row["email"],
+        role=row["role"], position=row["position"] or "",
+        region=row["region"] or "", active=bool(row["active"])
+    )
+
+
 @router.get("", response_model=list[schemas.UserOut])
-def list_users(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def list_users(db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role not in ("manager", "director", "admin"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
-    return [schemas.UserOut.model_validate(u) for u in db.query(models.User).order_by(models.User.name).all()]
+    rows = db.execute("SELECT * FROM users ORDER BY name").fetchall()
+    return [_row_to_user(r) for r in rows]
 
 
 @router.post("", response_model=schemas.UserOut)
-def create_user(
-    body: schemas.UserCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def create_user(body: schemas.UserCreate, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Только администратор может создавать пользователей")
-    if db.query(models.User).filter(models.User.email == body.email).first():
+    if db.execute("SELECT id FROM users WHERE email=?", (body.email,)).fetchone():
         raise HTTPException(status_code=400, detail="Email уже используется")
-    user = models.User(
-        id=str(uuid.uuid4()),
-        name=body.name,
-        email=body.email,
-        hashed_password=hash_password(body.password),
-        role=body.role,
-        position=body.position,
-        region=body.region,
+    uid = str(uuid.uuid4())
+    db.execute(
+        "INSERT INTO users(id,name,email,hashed_password,role,position,region,active) VALUES(?,?,?,?,?,?,?,1)",
+        (uid, body.name, body.email, hash_password(body.password), body.role, body.position, body.region)
     )
-    db.add(user)
-    audit = AuditLog(id=str(uuid.uuid4()), who=f"{current_user.name} (admin)", action="Создал пользователя", target=body.email)
-    db.add(audit)
-    db.commit()
-    db.refresh(user)
-    return schemas.UserOut.model_validate(user)
+    row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
+    return _row_to_user(row)
 
 
 @router.put("/{user_id}", response_model=schemas.UserOut)
-def update_user(
-    user_id: str,
-    body: schemas.UserUpdate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    if current_user.role != "admin" and current_user.id != user_id:
+def update_user(user_id: str, body: schemas.UserUpdate, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    if current_user.role not in ("admin",) and current_user.id != user_id:
         raise HTTPException(status_code=403, detail="Недостаточно прав")
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
+    row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-    data = body.model_dump(exclude_none=True)
-    if "password" in data:
-        user.hashed_password = hash_password(data.pop("password"))
-    for k, v in data.items():
-        setattr(user, k, v)
-    audit = AuditLog(id=str(uuid.uuid4()), who=f"{current_user.name} ({current_user.role})", action="Обновил пользователя", target=user.email)
-    db.add(audit)
-    db.commit()
-    db.refresh(user)
-    return schemas.UserOut.model_validate(user)
+    updates = body.dict(exclude_none=True)
+    if "password" in updates:
+        updates["hashed_password"] = hash_password(updates.pop("password"))
+    if "active" in updates:
+        updates["active"] = 1 if updates["active"] else 0
+    if not updates:
+        return _row_to_user(row)
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    db.execute(f"UPDATE users SET {set_clause} WHERE id=?", list(updates.values()) + [user_id])
+    row = db.execute("SELECT * FROM users WHERE id=?", (user_id,)).fetchone()
+    return _row_to_user(row)
 
 
 @router.delete("/{user_id}")
-def delete_user(
-    user_id: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def delete_user(user_id: str, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role != "admin":
         raise HTTPException(status_code=403, detail="Только администратор может удалять пользователей")
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
+    if not db.execute("SELECT id FROM users WHERE id=?", (user_id,)).fetchone():
         raise HTTPException(status_code=404, detail="Пользователь не найден")
-    audit = AuditLog(id=str(uuid.uuid4()), who=f"{current_user.name} (admin)", action="Удалил пользователя", target=user.email)
-    db.add(audit)
-    db.delete(user)
-    db.commit()
+    db.execute("DELETE FROM users WHERE id=?", (user_id,))
     return {"ok": True}

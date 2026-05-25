@@ -1,9 +1,7 @@
 from datetime import datetime
-from typing import Optional
-from pydantic import BaseModel, EmailStr
+from typing import Optional, List
+from pydantic import BaseModel
 
-
-# ── Auth ──────────────────────────────────────────────────────────────────────
 
 class LoginRequest(BaseModel):
     email: str
@@ -19,14 +17,6 @@ class RegisterRequest(BaseModel):
     region: str = ""
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    token_type: str = "bearer"
-    user: "UserOut"
-
-
-# ── Users ─────────────────────────────────────────────────────────────────────
-
 class UserOut(BaseModel):
     id: str
     name: str
@@ -36,7 +26,14 @@ class UserOut(BaseModel):
     region: str
     active: bool
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
 
 
 class UserCreate(BaseModel):
@@ -57,8 +54,6 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None
 
 
-# ── Wells ─────────────────────────────────────────────────────────────────────
-
 class WellOut(BaseModel):
     id: str
     code: str
@@ -78,10 +73,11 @@ class WellOut(BaseModel):
     operator_name: Optional[str] = None
     manager_name: Optional[str] = None
     last_report: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
+    created_at: str
+    updated_at: str
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
 
 class WellCreate(BaseModel):
@@ -117,8 +113,6 @@ class WellUpdate(BaseModel):
     manager_id: Optional[str] = None
 
 
-# ── Reports ───────────────────────────────────────────────────────────────────
-
 class ReportOut(BaseModel):
     id: str
     well_id: str
@@ -137,10 +131,11 @@ class ReportOut(BaseModel):
     annulus_p: Optional[float] = None
     pump_strokes: Optional[int] = None
     comment: Optional[str] = None
-    created_at: datetime
-    reviewed_at: Optional[datetime] = None
+    created_at: str
+    reviewed_at: Optional[str] = None
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
 
 class ReportCreate(BaseModel):
@@ -155,11 +150,9 @@ class ReportCreate(BaseModel):
 
 
 class ReportReview(BaseModel):
-    status: str  # "approved" | "rejected"
+    status: str
     comment: Optional[str] = None
 
-
-# ── Notifications ─────────────────────────────────────────────────────────────
 
 class NotificationOut(BaseModel):
     id: str
@@ -168,42 +161,39 @@ class NotificationOut(BaseModel):
     body: str
     tone: str
     unread: bool
-    created_at: datetime
+    created_at: str
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
-
-# ── Calendar Events ───────────────────────────────────────────────────────────
 
 class CalendarEventOut(BaseModel):
     id: str
     title: str
-    date: datetime
+    date: str
     event_type: str
     created_by: Optional[str] = None
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
 
 class CalendarEventCreate(BaseModel):
     title: str
-    date: datetime
+    date: str
     event_type: str = "Событие"
 
-
-# ── Audit ─────────────────────────────────────────────────────────────────────
 
 class AuditLogOut(BaseModel):
     id: str
     who: str
     action: str
     target: str
-    created_at: datetime
+    created_at: str
 
-    model_config = {"from_attributes": True}
+    class Config:
+        orm_mode = True
 
-
-# ── Dashboard ─────────────────────────────────────────────────────────────────
 
 class DashboardStats(BaseModel):
     active_wells: int
@@ -211,11 +201,9 @@ class DashboardStats(BaseModel):
     pending_reports: int
     flagged_reports: int
     total_production: float
-    production_trend: list[dict]
-    well_statuses: list[dict]
+    production_trend: List[dict]
+    well_statuses: List[dict]
 
-
-# ── AI ────────────────────────────────────────────────────────────────────────
 
 class AIChatRequest(BaseModel):
     message: str
@@ -223,15 +211,4 @@ class AIChatRequest(BaseModel):
 
 class AIChatResponse(BaseModel):
     reply: str
-    suggestions: list[str] = []
-
-
-# ── Production Trend ──────────────────────────────────────────────────────────
-
-class ProductionTrendPoint(BaseModel):
-    day: str
-    oil: float
-    gas: float
-
-
-TokenResponse.model_rebuild()
+    suggestions: List[str] = []

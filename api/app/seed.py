@@ -1,173 +1,104 @@
-"""Seed the database with demo data matching the frontend mock."""
-import uuid
-from datetime import datetime, timedelta
+"""Seed the SQLite database with demo data."""
 import random
-from sqlalchemy.orm import Session
-from app import models
+from datetime import datetime, timedelta
 from app.auth import hash_password
 
 
-def seed_db(db: Session):
-    if db.query(models.User).count() > 0:
-        return  # already seeded
+def _dt(d):
+    return d.strftime("%Y-%m-%d %H:%M:%S")
 
-    # ── Users ────────────────────────────────────────────────────────────────
-    users_data = [
-        {"id": "u-op-01", "name": "Айбек Сарсенов", "email": "operator@munai.kz", "role": "operator", "position": "Оператор по добыче нефти", "region": "Месторождение Узень-3"},
-        {"id": "u-op-02", "name": "Нурлан Темиров", "email": "n.temirov@munai.kz", "role": "operator", "position": "Оператор по добыче нефти", "region": "Месторождение Узень-3"},
-        {"id": "u-mg-01", "name": "Дана Жумабекова", "email": "manager@munai.kz", "role": "manager", "position": "Менеджер участка", "region": "Участок Северный"},
-        {"id": "u-dr-01", "name": "Ержан Касымов", "email": "director@munai.kz", "role": "director", "position": "Директор по добыче", "region": "Регион Мангистау"},
-        {"id": "u-ad-01", "name": "Админ Системы", "email": "admin@munai.kz", "role": "admin", "position": "Системный администратор", "region": "HQ"},
-        {"id": "u-op-03", "name": "Алия Жакупова", "email": "a.zhakupova@munai.kz", "role": "operator", "position": "Оператор по добыче нефти", "region": "Месторождение Узень-2", "active": False},
+
+def seed_db(conn):
+    row = conn.execute("SELECT COUNT(*) FROM users").fetchone()
+    if row[0] > 0:
+        return
+
+    pw = hash_password("demo")
+    now = datetime.utcnow()
+
+    users = [
+        ("u-op-01", "Айбек Сарсенов", "operator@munai.kz", pw, "operator", "Оператор по добыче нефти", "Месторождение Узень-3", 1),
+        ("u-op-02", "Нурлан Темиров", "n.temirov@munai.kz", pw, "operator", "Оператор по добыче нефти", "Месторождение Узень-3", 1),
+        ("u-mg-01", "Дана Жумабекова", "manager@munai.kz", pw, "manager", "Менеджер участка", "Участок Северный", 1),
+        ("u-dr-01", "Ержан Касымов", "director@munai.kz", pw, "director", "Директор по добыче", "Регион Мангистау", 1),
+        ("u-ad-01", "Админ Системы", "admin@munai.kz", pw, "admin", "Системный администратор", "HQ", 1),
+        ("u-op-03", "Алия Жакупова", "a.zhakupova@munai.kz", pw, "operator", "Оператор по добыче нефти", "Месторождение Узень-2", 0),
     ]
-    users = {}
-    for ud in users_data:
-        u = models.User(
-            id=ud["id"],
-            name=ud["name"],
-            email=ud["email"],
-            hashed_password=hash_password("demo"),
-            role=ud["role"],
-            position=ud.get("position", ""),
-            region=ud.get("region", ""),
-            active=ud.get("active", True),
-        )
-        db.add(u)
-        users[ud["id"]] = u
-    db.flush()
+    conn.executemany(
+        "INSERT INTO users(id,name,email,hashed_password,role,position,region,active) VALUES(?,?,?,?,?,?,?,?)",
+        users
+    )
 
-    # ── Wells ─────────────────────────────────────────────────────────────────
     statuses = ["active", "active", "active", "warning", "inactive", "broken"]
-    well_objects = []
+    rnd = random.Random(42)
+    wells = []
     for i in range(24):
         st = statuses[i % len(statuses)]
         product = "gas" if i % 5 == 0 else "condensate" if i % 7 == 0 else "oil"
-        w = models.Well(
-            id=f"w-{i+1}",
-            code=f"UZ-{101+i}",
-            name=f"Скважина №{101+i}",
-            status=st,
-            product=product,
-            production24h=round(random.uniform(8, 78), 1),
-            temperature=round(random.uniform(38, 92), 1),
-            tubing_internal_p=round(random.uniform(45, 180), 1),
-            tubing_external_p=round(random.uniform(20, 90), 1),
-            annulus_p=round(random.uniform(2, 18), 1),
-            pump_strokes=random.randint(4, 9),
-            lat=round(52.0 + (i * 0.15) % 3.0, 4),
-            lng=round(52.0 + (i * 0.23) % 5.0, 4),
-            operator_id="u-op-01" if i % 2 == 0 else "u-op-02",
-            manager_id="u-mg-01",
-        )
-        db.add(w)
-        well_objects.append(w)
-    db.flush()
+        wells.append((
+            f"w-{i+1}", f"UZ-{101+i}", f"Скважина №{101+i}", st, product,
+            round(rnd.uniform(8, 78), 1), round(rnd.uniform(38, 92), 1),
+            round(rnd.uniform(45, 180), 1), round(rnd.uniform(20, 90), 1),
+            round(rnd.uniform(2, 18), 1), rnd.randint(4, 9),
+            round(52.0 + (i * 0.15) % 3.0, 4), round(52.0 + (i * 0.23) % 5.0, 4),
+            "u-op-01" if i % 2 == 0 else "u-op-02", "u-mg-01",
+            _dt(now), _dt(now)
+        ))
+    conn.executemany(
+        "INSERT INTO wells(id,code,name,status,product,production24h,temperature,"
+        "tubing_internal_p,tubing_external_p,annulus_p,pump_strokes,lat,lng,"
+        "operator_id,manager_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        wells
+    )
 
-    # ── Reports ───────────────────────────────────────────────────────────────
-    report_seeds = [
-        {"id": "r-1", "well_id": "w-1", "operator_id": "u-op-01", "status": "pending", "ai_score": 92,
-         "summary": "Параметры в норме, добыча стабильна.", "temperature": 72.0, "production24h": 45.0,
-         "tubing_internal_p": 120.0, "tubing_external_p": 55.0, "annulus_p": 8.0, "pump_strokes": 6,
-         "created_at": datetime.utcnow() - timedelta(hours=2)},
-        {"id": "r-2", "well_id": "w-4", "operator_id": "u-op-01", "status": "flagged", "ai_score": 41,
-         "summary": "Температура выше нормы на 12%.", "flag": "Аномалия температуры",
-         "temperature": 96.0, "production24h": 38.0, "tubing_internal_p": 135.0,
-         "tubing_external_p": 60.0, "annulus_p": 10.0, "pump_strokes": 5,
-         "created_at": datetime.utcnow() - timedelta(hours=3)},
-        {"id": "r-3", "well_id": "w-8", "operator_id": "u-op-02", "status": "approved", "ai_score": 96,
-         "summary": "Замер давления выполнен корректно.", "temperature": 68.0, "production24h": 52.0,
-         "tubing_internal_p": 115.0, "tubing_external_p": 50.0, "annulus_p": 7.0, "pump_strokes": 7,
-         "created_at": datetime.utcnow() - timedelta(days=1, hours=5)},
-        {"id": "r-4", "well_id": "w-12", "operator_id": "u-op-01", "status": "approved", "ai_score": 88,
-         "summary": "Стандартный суточный замер.", "temperature": 74.0, "production24h": 41.0,
-         "tubing_internal_p": 118.0, "tubing_external_p": 53.0, "annulus_p": 9.0, "pump_strokes": 6,
-         "created_at": datetime.utcnow() - timedelta(days=1, hours=7)},
-        {"id": "r-5", "well_id": "w-17", "operator_id": "u-op-02", "status": "rejected", "ai_score": 22,
-         "summary": "Нечитаемый файл, требуется повторная подача.", "flag": "Низкое качество данных",
-         "temperature": 80.0, "production24h": 35.0, "tubing_internal_p": 140.0,
-         "tubing_external_p": 65.0, "annulus_p": 12.0, "pump_strokes": 4,
-         "created_at": datetime.utcnow() - timedelta(days=1, hours=11)},
-        {"id": "r-6", "well_id": "w-20", "operator_id": "u-op-01", "status": "approved", "ai_score": 94,
-         "summary": "Все параметры в пределах нормы.", "temperature": 70.0, "production24h": 48.0,
-         "tubing_internal_p": 122.0, "tubing_external_p": 57.0, "annulus_p": 8.0, "pump_strokes": 6,
-         "created_at": datetime.utcnow() - timedelta(days=2)},
-        {"id": "r-7", "well_id": "w-22", "operator_id": "u-op-01", "status": "pending", "ai_score": 78,
-         "summary": "Зафиксировано падение пластового давления.", "temperature": 75.0, "production24h": 32.0,
-         "tubing_internal_p": 108.0, "tubing_external_p": 48.0, "annulus_p": 6.0, "pump_strokes": 5,
-         "created_at": datetime.utcnow() - timedelta(days=2, hours=3)},
+    reports = [
+        ("r-1","w-1","u-op-01","pending",92,"Параметры в норме, добыча стабильна.",None,72.0,45.0,120.0,55.0,8.0,6,None,_dt(now-timedelta(hours=2)),None,None),
+        ("r-2","w-4","u-op-01","flagged",41,"Температура выше нормы на 12%.","Аномалия температуры",96.0,38.0,135.0,60.0,10.0,5,None,_dt(now-timedelta(hours=3)),None,None),
+        ("r-3","w-8","u-op-02","approved",96,"Замер давления выполнен корректно.",None,68.0,52.0,115.0,50.0,7.0,7,None,_dt(now-timedelta(days=1,hours=5)),None,None),
+        ("r-4","w-12","u-op-01","approved",88,"Стандартный суточный замер.",None,74.0,41.0,118.0,53.0,9.0,6,None,_dt(now-timedelta(days=1,hours=7)),None,None),
+        ("r-5","w-17","u-op-02","rejected",22,"Нечитаемый файл, требуется повторная подача.","Низкое качество данных",80.0,35.0,140.0,65.0,12.0,4,None,_dt(now-timedelta(days=1,hours=11)),None,None),
+        ("r-6","w-20","u-op-01","approved",94,"Все параметры в пределах нормы.",None,70.0,48.0,122.0,57.0,8.0,6,None,_dt(now-timedelta(days=2)),None,None),
+        ("r-7","w-22","u-op-01","pending",78,"Зафиксировано падение пластового давления.",None,75.0,32.0,108.0,48.0,6.0,5,None,_dt(now-timedelta(days=2,hours=3)),None,None),
     ]
-    for rd in report_seeds:
-        r = models.Report(
-            id=rd["id"],
-            well_id=rd["well_id"],
-            operator_id=rd["operator_id"],
-            status=rd["status"],
-            ai_score=rd["ai_score"],
-            summary=rd["summary"],
-            flag=rd.get("flag"),
-            temperature=rd.get("temperature"),
-            production24h=rd.get("production24h"),
-            tubing_internal_p=rd.get("tubing_internal_p"),
-            tubing_external_p=rd.get("tubing_external_p"),
-            annulus_p=rd.get("annulus_p"),
-            pump_strokes=rd.get("pump_strokes"),
-            created_at=rd.get("created_at", datetime.utcnow()),
-        )
-        db.add(r)
-    db.flush()
+    conn.executemany(
+        "INSERT INTO reports(id,well_id,operator_id,status,ai_score,summary,flag,"
+        "temperature,production24h,tubing_internal_p,tubing_external_p,annulus_p,"
+        "pump_strokes,comment,created_at,reviewed_at,reviewed_by) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        reports
+    )
 
-    # ── Notifications ─────────────────────────────────────────────────────────
-    notif_data = [
-        {"id": "n-1", "user_id": "u-op-01", "icon": "alert", "title": "AI: Аномалия на UZ-104",
-         "body": "Температура выше нормы на 12%. Требуется проверка.", "tone": "warning", "unread": True,
-         "created_at": datetime.utcnow() - timedelta(minutes=5)},
-        {"id": "n-2", "user_id": "u-op-01", "icon": "check", "title": "Отчёт одобрен",
-         "body": "Отчёт по UZ-108 одобрен менеджером.", "tone": "success", "unread": True,
-         "created_at": datetime.utcnow() - timedelta(hours=1)},
-        {"id": "n-3", "user_id": "u-mg-01", "icon": "calendar", "title": "Событие в календаре",
-         "body": "Плановое совещание 26 мая в 10:00.", "tone": "info", "unread": False,
-         "created_at": datetime.utcnow() - timedelta(hours=3)},
-        {"id": "n-4", "user_id": "u-op-02", "icon": "edit", "title": "Запрос на доработку",
-         "body": "Отчёт UZ-117 отклонён, требуется повтор.", "tone": "destructive", "unread": False,
-         "created_at": datetime.utcnow() - timedelta(days=1)},
+    notifs = [
+        ("n-1","u-op-01","alert","AI: Аномалия на UZ-104","Температура выше нормы на 12%. Требуется проверка.","warning",1,_dt(now-timedelta(minutes=5))),
+        ("n-2","u-op-01","check","Отчёт одобрен","Отчёт по UZ-108 одобрен менеджером.","success",1,_dt(now-timedelta(hours=1))),
+        ("n-3","u-mg-01","calendar","Событие в календаре","Плановое совещание 26 мая в 10:00.","info",0,_dt(now-timedelta(hours=3))),
+        ("n-4","u-op-02","edit","Запрос на доработку","Отчёт UZ-117 отклонён, требуется повтор.","destructive",0,_dt(now-timedelta(days=1))),
     ]
-    for nd in notif_data:
-        n = models.Notification(
-            id=nd["id"],
-            user_id=nd["user_id"],
-            icon=nd["icon"],
-            title=nd["title"],
-            body=nd["body"],
-            tone=nd["tone"],
-            unread=nd["unread"],
-            created_at=nd["created_at"],
-        )
-        db.add(n)
-    db.flush()
+    conn.executemany(
+        "INSERT INTO notifications(id,user_id,icon,title,body,tone,unread,created_at) VALUES(?,?,?,?,?,?,?,?)",
+        notifs
+    )
 
-    # ── Calendar Events ───────────────────────────────────────────────────────
-    now = datetime.utcnow()
-    events_data = [
-        {"id": "e-1", "title": "Плановый осмотр UZ-104", "date": now + timedelta(days=1, hours=10), "event_type": "Осмотр"},
-        {"id": "e-2", "title": "Совещание менеджеров", "date": now + timedelta(days=2, hours=14), "event_type": "Совещание"},
-        {"id": "e-3", "title": "Тренинг по безопасности", "date": now + timedelta(days=4, hours=9), "event_type": "Обучение"},
-        {"id": "e-4", "title": "Отчёт за месяц — дедлайн", "date": now + timedelta(days=6, hours=18), "event_type": "Дедлайн"},
+    events = [
+        ("e-1","Плановый осмотр UZ-104",_dt(now+timedelta(days=1,hours=10)),"Осмотр",None),
+        ("e-2","Совещание менеджеров",_dt(now+timedelta(days=2,hours=14)),"Совещание",None),
+        ("e-3","Тренинг по безопасности",_dt(now+timedelta(days=4,hours=9)),"Обучение",None),
+        ("e-4","Отчёт за месяц — дедлайн",_dt(now+timedelta(days=6,hours=18)),"Дедлайн",None),
     ]
-    for ed in events_data:
-        e = models.CalendarEvent(id=ed["id"], title=ed["title"], date=ed["date"], event_type=ed["event_type"])
-        db.add(e)
-    db.flush()
+    conn.executemany(
+        "INSERT INTO calendar_events(id,title,date,event_type,created_by) VALUES(?,?,?,?,?)",
+        events
+    )
 
-    # ── Audit Log ─────────────────────────────────────────────────────────────
-    audit_data = [
-        {"id": "a-1", "who": "Дана Ж. (manager)", "action": "Одобрила отчёт", "target": "UZ-108", "created_at": datetime.utcnow() - timedelta(hours=2)},
-        {"id": "a-2", "who": "Айбек С. (operator)", "action": "Создал отчёт", "target": "UZ-101", "created_at": datetime.utcnow() - timedelta(hours=3)},
-        {"id": "a-3", "who": "Ержан К. (director)", "action": "Изменил статус скважины", "target": "UZ-117 → broken", "created_at": datetime.utcnow() - timedelta(days=1, hours=6)},
-        {"id": "a-4", "who": "AI Engine", "action": "Отметил аномалию", "target": "UZ-104", "created_at": datetime.utcnow() - timedelta(days=1, hours=8)},
-        {"id": "a-5", "who": "Админ", "action": "Создал пользователя", "target": "operator+02@munai.kz", "created_at": datetime.utcnow() - timedelta(days=3)},
+    audits = [
+        ("a-1","Дана Ж. (manager)","Одобрила отчёт","UZ-108",_dt(now-timedelta(hours=2))),
+        ("a-2","Айбек С. (operator)","Создал отчёт","UZ-101",_dt(now-timedelta(hours=3))),
+        ("a-3","Ержан К. (director)","Изменил статус скважины","UZ-117 → broken",_dt(now-timedelta(days=1,hours=6))),
+        ("a-4","AI Engine","Отметил аномалию","UZ-104",_dt(now-timedelta(days=1,hours=8))),
+        ("a-5","Админ","Создал пользователя","operator+02@munai.kz",_dt(now-timedelta(days=3))),
     ]
-    for ad in audit_data:
-        a = models.AuditLog(id=ad["id"], who=ad["who"], action=ad["action"], target=ad["target"], created_at=ad["created_at"])
-        db.add(a)
+    conn.executemany(
+        "INSERT INTO audit_logs(id,who,action,target,created_at) VALUES(?,?,?,?,?)",
+        audits
+    )
 
-    db.commit()
+    conn.commit()

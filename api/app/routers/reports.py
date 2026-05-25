@@ -1,72 +1,55 @@
 import uuid
-import random
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlite3 import Connection
 from app.database import get_db
-from app import models, schemas
+from app import schemas
 from app.auth import get_current_user
-from app.models import AuditLog, Notification
 
 router = APIRouter(prefix="/reports", tags=["reports"])
 
 
-def _ai_score(body: schemas.ReportCreate) -> tuple[int, str | None, str]:
-    """Simple rule-based AI scoring matching frontend demo logic."""
-    score = 85
+def _ai_score(data: schemas.ReportCreate) -> tuple[int, str, str | None]:
+    score = 100
     flag = None
     issues = []
-
-    if body.temperature and body.temperature > 90:
-        score -= 40
+    if data.temperature and data.temperature > 90:
+        score -= 30
+        issues.append("Критически высокая температура")
         flag = "Аномалия температуры"
-        issues.append(f"Температура {body.temperature}°C выше нормы")
-    elif body.temperature and body.temperature > 80:
+    elif data.temperature and data.temperature > 80:
         score -= 15
-        issues.append(f"Температура повышена до {body.temperature}°C")
-
-    if body.tubing_internal_p and body.tubing_internal_p > 160:
+        issues.append("Повышенная температура")
+    if data.production24h and data.production24h < 10:
         score -= 20
-        flag = flag or "Высокое давление НКТ"
-        issues.append("Давление НКТ критическое")
-
-    if body.production24h and body.production24h < 10:
+        issues.append("Низкая суточная добыча")
+    if data.tubing_internal_p and data.tubing_internal_p > 160:
         score -= 25
-        flag = flag or "Низкая добыча"
-        issues.append("Добыча значительно ниже нормы")
-
-    score = max(0, min(100, score + random.randint(-5, 5)))
-
-    if issues:
-        summary = ". ".join(issues) + "."
-    else:
-        summary = "Параметры в норме, добыча стабильна."
-
-    status = "flagged" if flag else "pending"
-    return score, flag, summary, status
+        issues.append("Высокое давление в НКТ")
+        flag = flag or "Превышение давления"
+    if data.pump_strokes and data.pump_strokes < 3:
+        score -= 20
+        issues.append("Низкая частота качания")
+    score = max(0, score)
+    summary = "Параметры в норме." if not issues else "Выявлено: " + "; ".join(issues) + "."
+    return score, summary, flag
 
 
-def report_to_out(r: models.Report) -> schemas.ReportOut:
+def _row_to_out(row, db: Connection) -> schemas.ReportOut:
+    well = db.execute("SELECT code, name FROM wells WHERE id=?", (row["well_id"],)).fetchone()
+    op = db.execute("SELECT name FROM users WHERE id=?", (row["operator_id"],)).fetchone()
     return schemas.ReportOut(
-        id=r.id,
-        well_id=r.well_id,
-        well_code=r.well.code if r.well else None,
-        well_name=r.well.name if r.well else None,
-        operator_id=r.operator_id,
-        operator_name=r.user.name if r.user else None,
-        status=r.status,
-        ai_score=r.ai_score,
-        summary=r.summary,
-        flag=r.flag,
-        temperature=r.temperature,
-        production24h=r.production24h,
-        tubing_internal_p=r.tubing_internal_p,
-        tubing_external_p=r.tubing_external_p,
-        annulus_p=r.annulus_p,
-        pump_strokes=r.pump_strokes,
-        comment=r.comment,
-        created_at=r.created_at,
-        reviewed_at=r.reviewed_at,
+        id=row["id"], well_id=row["well_id"],
+        well_code=well["code"] if well else None,
+        well_name=well["name"] if well else None,
+        operator_id=row["operator_id"],
+        operator_name=op["name"] if op else None,
+        status=row["status"], ai_score=row["ai_score"],
+        summary=row["summary"] or "", flag=row["flag"],
+        temperature=row["temperature"], production24h=row["production24h"],
+        tubing_internal_p=row["tubing_internal_p"], tubing_external_p=row["tubing_external_p"],
+        annulus_p=row["annulus_p"], pump_strokes=row["pump_strokes"],
+        comment=row["comment"], created_at=row["created_at"], reviewed_at=row["reviewed_at"],
     )
 
 
@@ -74,158 +57,107 @@ def report_to_out(r: models.Report) -> schemas.ReportOut:
 def list_reports(
     q: str = Query(default=""),
     status: str = Query(default="all"),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    db: Connection = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    query = db.query(models.Report)
+    sql = "SELECT r.* FROM reports r WHERE 1=1"
+    params = []
     if current_user.role == "operator":
-        query = query.filter(models.Report.operator_id == current_user.id)
+        sql += " AND r.operator_id=?"
+        params.append(current_user.id)
     if status != "all":
-        query = query.filter(models.Report.status == status)
-    reports = query.order_by(models.Report.created_at.desc()).all()
+        sql += " AND r.status=?"
+        params.append(status)
     if q:
-        reports = [r for r in reports if q.lower() in (r.well.code if r.well else "").lower() or q.lower() in (r.user.name if r.user else "").lower()]
-    return [report_to_out(r) for r in reports]
+        sql += " AND (r.id LIKE ? OR r.well_id LIKE ?)"
+        params += [f"%{q}%", f"%{q}%"]
+    sql += " ORDER BY r.created_at DESC"
+    rows = db.execute(sql, params).fetchall()
+    return [_row_to_out(r, db) for r in rows]
 
 
 @router.get("/pending", response_model=list[schemas.ReportOut])
-def pending_reports(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def pending_reports(db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role not in ("manager", "director", "admin"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
-    reports = db.query(models.Report).filter(
-        models.Report.status.in_(["pending", "flagged"])
-    ).order_by(models.Report.created_at.desc()).all()
-    return [report_to_out(r) for r in reports]
+    rows = db.execute("SELECT * FROM reports WHERE status='pending' ORDER BY created_at DESC").fetchall()
+    return [_row_to_out(r, db) for r in rows]
 
 
 @router.get("/{report_id}", response_model=schemas.ReportOut)
-def get_report(report_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    r = db.query(models.Report).filter(models.Report.id == report_id).first()
-    if not r:
+def get_report(report_id: str, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    row = db.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Отчёт не найден")
-    return report_to_out(r)
+    return _row_to_out(row, db)
 
 
 @router.post("", response_model=schemas.ReportOut)
-def create_report(
-    body: schemas.ReportCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    well = db.query(models.Well).filter(models.Well.id == body.well_id).first()
+def create_report(body: schemas.ReportCreate, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    well = db.execute("SELECT id FROM wells WHERE id=?", (body.well_id,)).fetchone()
     if not well:
         raise HTTPException(status_code=404, detail="Скважина не найдена")
-
-    score, flag, summary, report_status = _ai_score(body)
-
-    r = models.Report(
-        id=str(uuid.uuid4()),
-        well_id=body.well_id,
-        operator_id=current_user.id,
-        status=report_status,
-        ai_score=score,
-        summary=summary,
-        flag=flag,
-        temperature=body.temperature,
-        production24h=body.production24h,
-        tubing_internal_p=body.tubing_internal_p,
-        tubing_external_p=body.tubing_external_p,
-        annulus_p=body.annulus_p,
-        pump_strokes=body.pump_strokes,
-        comment=body.comment,
+    score, summary, flag = _ai_score(body)
+    rid = str(uuid.uuid4())
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    status = "flagged" if flag else "pending"
+    db.execute(
+        "INSERT INTO reports(id,well_id,operator_id,status,ai_score,summary,flag,"
+        "temperature,production24h,tubing_internal_p,tubing_external_p,annulus_p,"
+        "pump_strokes,comment,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (rid, body.well_id, current_user.id, status, score, summary, flag,
+         body.temperature, body.production24h, body.tubing_internal_p,
+         body.tubing_external_p, body.annulus_p, body.pump_strokes, body.comment, now)
     )
-    db.add(r)
-
-    # Audit log
-    audit = AuditLog(id=str(uuid.uuid4()), who=f"{current_user.name} ({current_user.role})", action="Создал отчёт", target=well.code)
-    db.add(audit)
-
-    # Notify manager if flagged
-    if flag and well.manager_id:
-        notif = Notification(
-            id=str(uuid.uuid4()),
-            user_id=well.manager_id,
-            icon="alert",
-            title=f"AI: Аномалия на {well.code}",
-            body=f"{summary} (AI score: {score}/100)",
-            tone="warning",
-            unread=True,
+    if flag:
+        db.execute(
+            "INSERT INTO notifications(id,user_id,icon,title,body,tone,unread,created_at) VALUES(?,?,?,?,?,?,1,?)",
+            (str(uuid.uuid4()), current_user.id, "alert", f"AI: Аномалия обнаружена", flag, "warning", now)
         )
-        db.add(notif)
-
-        # Also notify the operator
-        op_notif = Notification(
-            id=str(uuid.uuid4()),
-            user_id=current_user.id,
-            icon="alert",
-            title=f"AI обнаружил аномалию в {well.code}",
-            body=f"{flag}: {summary}",
-            tone="warning",
-            unread=True,
-        )
-        db.add(op_notif)
-
-    db.commit()
-    db.refresh(r)
-    return report_to_out(r)
+    db.execute(
+        "INSERT INTO audit_logs(id,who,action,target,created_at) VALUES(?,?,?,?,?)",
+        (str(uuid.uuid4()), f"{current_user.name} ({current_user.role})", "Создал отчёт", body.well_id, now)
+    )
+    row = db.execute("SELECT * FROM reports WHERE id=?", (rid,)).fetchone()
+    return _row_to_out(row, db)
 
 
 @router.post("/{report_id}/review", response_model=schemas.ReportOut)
-def review_report(
-    report_id: str,
-    body: schemas.ReportReview,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def review_report(report_id: str, body: schemas.ReportReview, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role not in ("manager", "director", "admin"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
+    row = db.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Отчёт не найден")
     if body.status not in ("approved", "rejected"):
         raise HTTPException(status_code=400, detail="Статус должен быть approved или rejected")
-
-    r = db.query(models.Report).filter(models.Report.id == report_id).first()
-    if not r:
-        raise HTTPException(status_code=404, detail="Отчёт не найден")
-
-    r.status = body.status
-    r.reviewed_at = datetime.utcnow()
-    r.reviewed_by = current_user.id
-
-    action_ru = "Одобрил отчёт" if body.status == "approved" else "Отклонил отчёт"
-    audit = AuditLog(id=str(uuid.uuid4()), who=f"{current_user.name} ({current_user.role})", action=action_ru, target=r.well.code if r.well else r.well_id)
-    db.add(audit)
-
-    # Notify the operator
-    tone = "success" if body.status == "approved" else "destructive"
-    title = f"Отчёт одобрен" if body.status == "approved" else "Отчёт отклонён"
-    notif = Notification(
-        id=str(uuid.uuid4()),
-        user_id=r.operator_id,
-        icon="check" if body.status == "approved" else "edit",
-        title=title,
-        body=f"Отчёт по {r.well.code if r.well else r.well_id} {action_ru.lower()}. {body.comment or ''}",
-        tone=tone,
-        unread=True,
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        "UPDATE reports SET status=?, reviewed_at=?, reviewed_by=? WHERE id=?",
+        (body.status, now, current_user.id, report_id)
     )
-    db.add(notif)
-    db.commit()
-    db.refresh(r)
-    return report_to_out(r)
+    tone = "success" if body.status == "approved" else "destructive"
+    title = "Отчёт одобрен" if body.status == "approved" else "Отчёт отклонён"
+    db.execute(
+        "INSERT INTO notifications(id,user_id,icon,title,body,tone,unread,created_at) VALUES(?,?,?,?,?,?,1,?)",
+        (str(uuid.uuid4()), row["operator_id"], "check" if body.status == "approved" else "x",
+         title, body.comment or "", tone, now)
+    )
+    db.execute(
+        "INSERT INTO audit_logs(id,who,action,target,created_at) VALUES(?,?,?,?,?)",
+        (str(uuid.uuid4()), f"{current_user.name} ({current_user.role})",
+         "Одобрил отчёт" if body.status == "approved" else "Отклонил отчёт", report_id, now)
+    )
+    row = db.execute("SELECT * FROM reports WHERE id=?", (report_id,)).fetchone()
+    return _row_to_out(row, db)
 
 
 @router.delete("/{report_id}")
-def delete_report(
-    report_id: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    r = db.query(models.Report).filter(models.Report.id == report_id).first()
-    if not r:
+def delete_report(report_id: str, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    row = db.execute("SELECT operator_id FROM reports WHERE id=?", (report_id,)).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Отчёт не найден")
-    if current_user.role not in ("admin", "director") and r.operator_id != current_user.id:
+    if current_user.role not in ("manager", "director", "admin") and row["operator_id"] != current_user.id:
         raise HTTPException(status_code=403, detail="Недостаточно прав")
-    db.delete(r)
-    db.commit()
+    db.execute("DELETE FROM reports WHERE id=?", (report_id,))
     return {"ok": True}

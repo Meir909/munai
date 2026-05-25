@@ -1,49 +1,40 @@
 import uuid
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlite3 import Connection
+from datetime import datetime
 from app.database import get_db
-from app import models, schemas
+from app import schemas
 from app.auth import get_current_user
 
 router = APIRouter(prefix="/calendar", tags=["calendar"])
 
 
+def _row_to_out(row) -> schemas.CalendarEventOut:
+    return schemas.CalendarEventOut(
+        id=row["id"], title=row["title"], date=row["date"],
+        event_type=row["event_type"], created_by=row["created_by"]
+    )
+
+
 @router.get("", response_model=list[schemas.CalendarEventOut])
-def list_events(
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    events = db.query(models.CalendarEvent).order_by(models.CalendarEvent.date).all()
-    return [schemas.CalendarEventOut.model_validate(e) for e in events]
+def list_events(db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    rows = db.execute("SELECT * FROM calendar_events ORDER BY date").fetchall()
+    return [_row_to_out(r) for r in rows]
 
 
 @router.post("", response_model=schemas.CalendarEventOut)
-def create_event(
-    body: schemas.CalendarEventCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    e = models.CalendarEvent(
-        id=str(uuid.uuid4()),
-        title=body.title,
-        date=body.date,
-        event_type=body.event_type,
-        created_by=current_user.id,
+def create_event(body: schemas.CalendarEventCreate, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    eid = str(uuid.uuid4())
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        "INSERT INTO calendar_events(id,title,date,event_type,created_by,created_at) VALUES(?,?,?,?,?,?)",
+        (eid, body.title, body.date, body.event_type, current_user.id, now)
     )
-    db.add(e)
-    db.commit()
-    db.refresh(e)
-    return schemas.CalendarEventOut.model_validate(e)
+    row = db.execute("SELECT * FROM calendar_events WHERE id=?", (eid,)).fetchone()
+    return _row_to_out(row)
 
 
 @router.delete("/{event_id}")
-def delete_event(
-    event_id: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
-    e = db.query(models.CalendarEvent).filter(models.CalendarEvent.id == event_id).first()
-    if e:
-        db.delete(e)
-        db.commit()
+def delete_event(event_id: str, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    db.execute("DELETE FROM calendar_events WHERE id=?", (event_id,))
     return {"ok": True}

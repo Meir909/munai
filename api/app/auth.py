@@ -5,10 +5,10 @@ import jwt
 from jwt.exceptions import InvalidTokenError
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.orm import Session
+from sqlite3 import Connection
 from app.config import settings
 from app.database import get_db
-from app import models
+from app import schemas
 
 bearer_scheme = HTTPBearer(auto_error=False)
 
@@ -40,8 +40,8 @@ def decode_token(token: str) -> Optional[dict]:
 
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer_scheme),
-    db: Session = Depends(get_db),
-) -> models.User:
+    db: Connection = Depends(get_db),
+) -> schemas.UserOut:
     if not credentials:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
     payload = decode_token(credentials.credentials)
@@ -50,14 +50,18 @@ def get_current_user(
     user_id: str = payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user or not user.active:
+    row = db.execute("SELECT * FROM users WHERE id=? AND active=1", (user_id,)).fetchone()
+    if not row:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found or inactive")
-    return user
+    return schemas.UserOut(
+        id=row["id"], name=row["name"], email=row["email"],
+        role=row["role"], position=row["position"] or "",
+        region=row["region"] or "", active=bool(row["active"])
+    )
 
 
 def require_roles(*roles: str):
-    def dependency(current_user: models.User = Depends(get_current_user)):
+    def dependency(current_user: schemas.UserOut = Depends(get_current_user)):
         if current_user.role not in roles:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Insufficient permissions")
         return current_user

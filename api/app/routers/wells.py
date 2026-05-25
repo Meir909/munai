@@ -1,132 +1,142 @@
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.orm import Session
+from sqlite3 import Connection
 from app.database import get_db
-from app import models, schemas
+from app import schemas
 from app.auth import get_current_user
-from app.models import AuditLog
 
 router = APIRouter(prefix="/wells", tags=["wells"])
 
 
-def well_to_out(w: models.Well) -> schemas.WellOut:
-    last_report = None
-    if w.reports:
-        latest = max(w.reports, key=lambda r: r.created_at)
-        delta = datetime.utcnow() - latest.created_at
+def _last_report_label(created_at_str):
+    if not created_at_str:
+        return None
+    try:
+        ts = datetime.strptime(created_at_str, "%Y-%m-%d %H:%M:%S")
+        delta = datetime.utcnow() - ts
         hours = int(delta.total_seconds() // 3600)
         if hours < 1:
-            last_report = "Менее часа назад"
+            return "Менее часа назад"
         elif hours < 24:
-            last_report = f"{hours}ч назад"
+            return f"{hours}ч назад"
         else:
-            last_report = f"{hours // 24}д назад"
+            return f"{hours // 24}д назад"
+    except Exception:
+        return None
 
+
+def _row_to_out(row, db: Connection) -> schemas.WellOut:
+    op_name = None
+    if row["operator_id"]:
+        u = db.execute("SELECT name FROM users WHERE id=?", (row["operator_id"],)).fetchone()
+        op_name = u["name"] if u else None
+    mg_name = None
+    if row["manager_id"]:
+        u = db.execute("SELECT name FROM users WHERE id=?", (row["manager_id"],)).fetchone()
+        mg_name = u["name"] if u else None
+    last_r = db.execute(
+        "SELECT created_at FROM reports WHERE well_id=? ORDER BY created_at DESC LIMIT 1", (row["id"],)
+    ).fetchone()
+    last_report = _last_report_label(last_r["created_at"] if last_r else None)
     return schemas.WellOut(
-        id=w.id,
-        code=w.code,
-        name=w.name,
-        status=w.status,
-        product=w.product,
-        production24h=w.production24h,
-        temperature=w.temperature,
-        tubing_internal_p=w.tubing_internal_p,
-        tubing_external_p=w.tubing_external_p,
-        annulus_p=w.annulus_p,
-        pump_strokes=w.pump_strokes,
-        lat=w.lat,
-        lng=w.lng,
-        operator_id=w.operator_id,
-        manager_id=w.manager_id,
-        operator_name=w.operator.name if w.operator else None,
-        manager_name=w.manager.name if w.manager else None,
+        id=row["id"], code=row["code"], name=row["name"],
+        status=row["status"], product=row["product"],
+        production24h=row["production24h"], temperature=row["temperature"],
+        tubing_internal_p=row["tubing_internal_p"], tubing_external_p=row["tubing_external_p"],
+        annulus_p=row["annulus_p"], pump_strokes=row["pump_strokes"],
+        lat=row["lat"], lng=row["lng"],
+        operator_id=row["operator_id"], manager_id=row["manager_id"],
+        operator_name=op_name, manager_name=mg_name,
         last_report=last_report,
-        created_at=w.created_at,
-        updated_at=w.updated_at,
+        created_at=row["created_at"], updated_at=row["updated_at"],
     )
 
 
 @router.get("", response_model=list[schemas.WellOut])
 def list_wells(
-    q: str = Query(default="", description="Search query"),
+    q: str = Query(default=""),
     status: str = Query(default="all"),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
+    db: Connection = Depends(get_db),
+    current_user=Depends(get_current_user),
 ):
-    query = db.query(models.Well)
+    sql = "SELECT * FROM wells WHERE 1=1"
+    params = []
     if status != "all":
-        query = query.filter(models.Well.status == status)
+        sql += " AND status=?"
+        params.append(status)
     if q:
-        query = query.filter(
-            (models.Well.code.ilike(f"%{q}%")) | (models.Well.name.ilike(f"%{q}%"))
-        )
-    wells = query.order_by(models.Well.code).all()
-    return [well_to_out(w) for w in wells]
+        sql += " AND (code LIKE ? OR name LIKE ?)"
+        params += [f"%{q}%", f"%{q}%"]
+    sql += " ORDER BY code"
+    rows = db.execute(sql, params).fetchall()
+    return [_row_to_out(r, db) for r in rows]
 
 
 @router.get("/{well_id}", response_model=schemas.WellOut)
-def get_well(well_id: str, db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
-    w = db.query(models.Well).filter(models.Well.id == well_id).first()
-    if not w:
+def get_well(well_id: str, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
+    row = db.execute("SELECT * FROM wells WHERE id=?", (well_id,)).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Скважина не найдена")
-    return well_to_out(w)
+    return _row_to_out(row, db)
 
 
 @router.post("", response_model=schemas.WellOut)
-def create_well(
-    body: schemas.WellCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def create_well(body: schemas.WellCreate, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role not in ("manager", "director", "admin"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
-    if db.query(models.Well).filter(models.Well.code == body.code).first():
+    if db.execute("SELECT id FROM wells WHERE code=?", (body.code,)).fetchone():
         raise HTTPException(status_code=400, detail="Скважина с таким кодом уже существует")
-    w = models.Well(id=str(uuid.uuid4()), **body.model_dump())
-    db.add(w)
-    audit = AuditLog(id=str(uuid.uuid4()), who=f"{current_user.name} ({current_user.role})", action="Создал скважину", target=body.code)
-    db.add(audit)
-    db.commit()
-    db.refresh(w)
-    return well_to_out(w)
+    wid = str(uuid.uuid4())
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        "INSERT INTO wells(id,code,name,status,product,production24h,temperature,"
+        "tubing_internal_p,tubing_external_p,annulus_p,pump_strokes,lat,lng,"
+        "operator_id,manager_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (wid, body.code, body.name, body.status, body.product, body.production24h,
+         body.temperature, body.tubing_internal_p, body.tubing_external_p,
+         body.annulus_p, body.pump_strokes, body.lat, body.lng,
+         body.operator_id, body.manager_id, now, now)
+    )
+    db.execute(
+        "INSERT INTO audit_logs(id,who,action,target,created_at) VALUES(?,?,?,?,?)",
+        (str(uuid.uuid4()), f"{current_user.name} ({current_user.role})", "Создал скважину", body.code, now)
+    )
+    row = db.execute("SELECT * FROM wells WHERE id=?", (wid,)).fetchone()
+    return _row_to_out(row, db)
 
 
 @router.put("/{well_id}", response_model=schemas.WellOut)
-def update_well(
-    well_id: str,
-    body: schemas.WellUpdate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def update_well(well_id: str, body: schemas.WellUpdate, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role not in ("manager", "director", "admin"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
-    w = db.query(models.Well).filter(models.Well.id == well_id).first()
-    if not w:
+    row = db.execute("SELECT * FROM wells WHERE id=?", (well_id,)).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Скважина не найдена")
-    for field, value in body.model_dump(exclude_none=True).items():
-        setattr(w, field, value)
-    w.updated_at = datetime.utcnow()
-    audit = AuditLog(id=str(uuid.uuid4()), who=f"{current_user.name} ({current_user.role})", action="Обновил скважину", target=w.code)
-    db.add(audit)
-    db.commit()
-    db.refresh(w)
-    return well_to_out(w)
+    updates = {k: v for k, v in body.dict(exclude_none=True).items()}
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    updates["updated_at"] = now
+    set_clause = ", ".join(f"{k}=?" for k in updates)
+    db.execute(f"UPDATE wells SET {set_clause} WHERE id=?", list(updates.values()) + [well_id])
+    db.execute(
+        "INSERT INTO audit_logs(id,who,action,target,created_at) VALUES(?,?,?,?,?)",
+        (str(uuid.uuid4()), f"{current_user.name} ({current_user.role})", "Обновил скважину", row["code"], now)
+    )
+    row = db.execute("SELECT * FROM wells WHERE id=?", (well_id,)).fetchone()
+    return _row_to_out(row, db)
 
 
 @router.delete("/{well_id}")
-def delete_well(
-    well_id: str,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user),
-):
+def delete_well(well_id: str, db: Connection = Depends(get_db), current_user=Depends(get_current_user)):
     if current_user.role not in ("director", "admin"):
         raise HTTPException(status_code=403, detail="Недостаточно прав")
-    w = db.query(models.Well).filter(models.Well.id == well_id).first()
-    if not w:
+    row = db.execute("SELECT code FROM wells WHERE id=?", (well_id,)).fetchone()
+    if not row:
         raise HTTPException(status_code=404, detail="Скважина не найдена")
-    audit = AuditLog(id=str(uuid.uuid4()), who=f"{current_user.name} ({current_user.role})", action="Удалил скважину", target=w.code)
-    db.add(audit)
-    db.delete(w)
-    db.commit()
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+    db.execute(
+        "INSERT INTO audit_logs(id,who,action,target,created_at) VALUES(?,?,?,?,?)",
+        (str(uuid.uuid4()), f"{current_user.name} ({current_user.role})", "Удалил скважину", row["code"], now)
+    )
+    db.execute("DELETE FROM wells WHERE id=?", (well_id,))
     return {"ok": True}

@@ -2,7 +2,6 @@
 import sys
 import os
 
-# Add api directory to path so app package is importable
 sys.path.insert(0, os.path.dirname(__file__))
 
 from fastapi import FastAPI
@@ -10,28 +9,17 @@ from fastapi.middleware.cors import CORSMiddleware
 from mangum import Mangum
 
 from app.config import settings
-from app.database import engine, SessionLocal
-from app import models
+from app.database import init_db, get_connection
 from app.seed import seed_db
 from app.routers import auth, wells, reports, users, notifications, calendar, dashboard, audit, ai
 
-# Create all tables on cold start
-models.Base.metadata.create_all(bind=engine)
-
-# Seed once
-_seeded = False
-def _seed():
-    global _seeded
-    if _seeded:
-        return
-    db = SessionLocal()
-    try:
-        seed_db(db)
-        _seeded = True
-    finally:
-        db.close()
-
-_seed()
+# Initialize DB schema and seed on cold start
+init_db()
+_conn = get_connection()
+try:
+    seed_db(_conn)
+finally:
+    _conn.close()
 
 app = FastAPI(
     title="MUNAI API",
@@ -69,5 +57,4 @@ def health():
     return {"status": "healthy"}
 
 
-# Vercel handler
 handler = Mangum(app, lifespan="off")
