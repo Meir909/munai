@@ -1,0 +1,37 @@
+{
+  "version": 2,
+  "framework": null,
+  "buildCommand": "cd munai-digital-oilfield-ops-main && npm install && npm run build:spa",
+  "outputDirectory": "munai-digital-oilfield-ops-main/dist",
+  "installCommand": "pip install -r api/requirements.txt",
+  "functions": {
+    "api/index.py": {
+      "runtime": "python3.11",
+      "maxDuration": 30
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/(.*)",
+      "dest": "/api/index.py"
+    },
+    {
+      "src": "/assets/(.*)",
+      "dest": "/assets/$1"
+    },
+    {
+      "handle": "filesystem"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/index.html"
+    }
+  ],
+  "env": {
+    "DATABASE_URL": "sqlite:////tmp/munai.db",
+    "SECRET_KEY": "munai-production-secret-key-2026-change-me",
+    "ALGORITHM": "HS256",
+    "ACCESS_TOKEN_EXPIRE_MINUTES": "10080",
+    "VITE_API_URL": "/api"
+  }
+}

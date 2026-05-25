@@ -1,0 +1,44 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+venv/
+env/
+.venv/
+*.egg
+pip-wheel-metadata/
+*.db
+*.sqlite3
+
+# Node
+node_modules/
+munai-digital-oilfield-ops-main/node_modules/
+munai-digital-oilfield-ops-main/dist/
+.next/
+.nuxt/
+.cache/
+*.log
+
+# Environment
+.env
+.env.local
+.env.production
+backend/.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Vercel
+.vercel/
