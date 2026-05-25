@@ -6,8 +6,9 @@
   "installCommand": "pip install -r api/requirements.txt --break-system-packages",
   "functions": {
     "api/index.py": {
-      "runtime": "@vercel/python@3.0.7",
-      "maxDuration": 30
+      "runtime": "@vercel/python@4.5.0",
+      "maxDuration": 30,
+      "excludeFiles": "**/__pycache__/**|**/*.pyc|**/*.pyo|**/*.dist-info/**|**/*.egg-info/**|**/tests/**|**/test/**|**/_pytest/**|**/pytest/**|**/pip/**|**/setuptools/**|**/wheel/**|**/*.so.debug"
     }
   },
   "routes": [
