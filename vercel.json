@@ -6,7 +6,7 @@
   "installCommand": "pip install -r api/requirements.txt --break-system-packages",
   "functions": {
     "api/index.py": {
-      "runtime": "@vercel/python@4.5.0",
+      "runtime": "@vercel/python@3.0.7",
       "maxDuration": 30
     }
   },
